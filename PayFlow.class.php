@@ -1,492 +1,238 @@
 <?php
-  /**
-  * The script implements the HTTPS protocol, via the PHP cURL extension. 
-  *
-  * The URLs to test are:
-  * for testing: pilot-payflowpro.verisign.com 
-  * production: payflowpro.verisign.com
-  *
-  * The nice thing about this protocol is that if you *don't* get a
-  * $response, you can simply re-submit the transaction *using the same
-  * REQUEST_ID* until you *do* get a response -- every time PayPal gets
-  * a transaction with the same REQUEST_ID, it will not process a new
-  * transactions, but simply return the same results, with a DUPLICATE=1
-  * parameter appended.
-  *
-  * API rebuild by Radu Manole, 
-  * radu@u-zine.com, March 2007
-  *
-  * Many thanks to Sieber Todd, tsieber@paypal.com
-  */
+/**
+* PHP SDK for using the PayFlow Pro HTTPS API
+*
+* This is a rewrite of http://code.google.com/p/paypal-payflowpro-php/
+*
+* What's different?  
+*	1) cURL requqests are isolated into a single internal method, rather than repeated for each different call
+*
+*   2) Card/Cardholder/Transaction information is isolated into a Credit Card Transaction Slip Object
+*
+*/
 
-  class payflow {
+if(!function_exists('curl_init')) 
+	throw new Exception("the curl extension is not installed");
+
+require_once('CCTransSlip.class.php');
+
+define('PFP_LIVE_URL','https://payflowpro.verisign.com/transaction');
+define('PFP_TEST_URL','https://pilot-payflowpro.verisign.com/transaction');
+define('PFP_USER_AGENT',"Mozilla/4.0 (compatible; PHP CURL PayFlow SDK)"); 
+define('PFP_TIMEOUT',45);
+define('PFP_V','0.2');
+define('PFP_MODE_TEST',1);
+define('PFP_MODE_LIVE',0)
+
+define('PFP_STATUS_OK', 1);
+define('PFP_USER_ERR', 0);
+define('PFP_SYS_ERR', -1);
+
+class PayFlow {
     
-    var $submiturl;
-    var $vendor;
-    var $user;
-    var $partner;
-    var $password;
-    var $errors = '';
-    var $ClientCertificationId = '13fda2433fc2123d8b191d2d011b7fdc'; // deprecated - use a random id
-    var $currencies_allowed = array('USD', 'EUR', 'GBP', 'CAD', 'JPY', 'AUD');
-    var $test_mode = 1; // 1 = true, 0 = production
+	var $vendor;
+	var $user;
+	var $partner;
+	var $password;
+
+	var $errors;
+	
+	var $currencies_allowed = array('USD', 'EUR', 'GBP', 'CAD', 'JPY', 'AUD');
+
+	var $test_mode = 1; // 1 = true, 0 = production
     
-    function payflow($vendor, $user, $partner, $password) {
-      
-      $this->vendor = $vendor;
-      $this->user = $user;
-      $this->partner = $partner;
-      $this->password = $password;
-      
-      if (strlen($this->vendor) == 0) {
-        $this->set_errors('Vendor not found');
-        return;
-      }
-      if (strlen($this->user) == 0) {
-        $this->set_errors('User not found');
-        return false;
-      }
-      if (strlen($this->partner) == 0) {
-        $this->set_errors('Partner not found');
-        return false;
-      }
-      if (strlen($this->password) == 0) {
-        $this->set_errors('Password not found');
-        return false;
-      }
-      
-      if ($this->test_mode == 1) {
-        $this->submiturl = 'https://pilot-payflowpro.verisign.com/transaction';   
-      } else {
-        $this->submiturl = 'https://payflowpro.verisign.com/transaction';
-      }
-      
-      // check for CURL
-      if (!function_exists('curl_init')) {
-        $this->set_errors('Curl function not found.');
-        return;
-      }           
+    function __construct($args) {
+		$requireds = array('vendor','user','partner','password');
+		$missings = array();
+		foreach($requireds as $arg) {
+			if(isset($args[$arg]) && trim($args[$arg]))
+				$this->$arg = $args[$arg];
+			else
+				$missings[] = $arg;
+		}
+		if(isset($args['mode']))
+			$this->test_mode = $args['mode'] ? PFP_MODE_TEST : PFP_MODE_LIVE;
+
+		if($missings) 
+			throw new Exception("Missing required arguments: ".implode(', ',$missings));
     }
 
     // sale
-    function sale_transaction($card_number, $card_expire, $amount, $currency = 'USD', $data_array = array()) {
-
-      if ($this->validate_card_number($card_number) == false) {
-        $this->set_errors('Card Number not valid');
-        return;     
-      }
-      if ($this->validate_card_expire($card_expire) == false) {
-        $this->set_errors('Card Expiration Date not valid');
-        return;     
-      }     
-      if (!is_numeric($amount) || $amount <= 0) {
-        $this->set_errors('Amount is not valid');
-        return;           
-      }
-      if (!in_array($currency, $this->currencies_allowed)) {
-        $this->set_errors('Currency not allowed');
-        return;                   
-      } 
-
-      // build hash
-      $tempstr = $card_number . $amount . date('YmdGis') . "1";
-      $request_id = md5($tempstr);
-
-      // body
-      $plist = 'USER=' . $this->user . '&';
-      $plist .= 'VENDOR=' . $this->vendor . '&';
-      $plist .= 'PARTNER=' . $this->partner . '&';
-      $plist .= 'PWD=' . $this->password . '&';           
-      $plist .= 'TENDER=' . 'C' . '&'; // C = credit card, P = PayPal
-      $plist .= 'TRXTYPE=' . 'S' . '&'; //  S = Sale transaction, A = Authorisation, C = Credit, D = Delayed Capture, V = Void                        
-      $plist .= 'ACCT=' . $card_number . '&'; 
-      $plist .= 'EXPDATE=' . $card_expire . '&';
-      $plist .= 'NAME=' . $card_name . '&';
-      $plist .= 'AMT=' . $amount . '&';
-      // extra data
-      $plist .= 'CURRENCY=' . $currency . '&';
-      $plist .= 'COMMENT1=' . $data_array['comment1'] . '&'; 
-      $plist .= 'FIRSTNAME=' . $data_array['firstname'] . '&';
-      $plist .= 'LASTNAME=' . $data_array['lastname'] . '&';
-      $plist .= 'STREET=' . $data_array['street'] . '&';
-      $plist .= 'CITY=' . $data_array['city'] . '&';     
-      $plist .= 'STATE=' . $data_array['state'] . '&';     
-      $plist .= 'ZIP=' . $data_array['zip'] .  '&';      
-      $plist .= 'COUNTRY=US' . $data_array['country'] . '&';
-      if (isset($data_array['cvv'])) {
-        $plist .= 'CVV2=' . $data_array['cvv'] . '&';
-      }
-      $plist .= 'CLIENTIP=' . $data_array['clientip'] . '&';
-      // verbosity
-      $plist .= 'VERBOSITY=MEDIUM';
-
-      $headers = $this->get_curl_headers();
-      $headers[] = "X-VPS-Request-ID: " . $request_id;
-
-      $user_agent = "Mozilla/4.0 (compatible; MSIE 5.01; Windows NT 5.0)"; // play as Mozilla
-      $ch = curl_init(); 
-      curl_setopt($ch, CURLOPT_URL, $this->submiturl);
-      curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-      curl_setopt($ch, CURLOPT_USERAGENT, $user_agent);
-      curl_setopt($ch, CURLOPT_HEADER, 1); // tells curl to include headers in response
-      curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1); // return into a variable
-      curl_setopt($ch, CURLOPT_TIMEOUT, 45); // times out after 45 secs
-      curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 0);
-      curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0); // this line makes it work under https
-      curl_setopt($ch, CURLOPT_POSTFIELDS, $plist); //adding POST data
-      curl_setopt($ch, CURLOPT_SSL_VERIFYHOST,  2); //verifies ssl certificate
-      curl_setopt($ch, CURLOPT_FORBID_REUSE, TRUE); //forces closure of connection when done 
-      curl_setopt($ch, CURLOPT_POST, 1); //data sent as POST 
-    
-      $result = curl_exec($ch);
-      $headers = curl_getinfo($ch);
-      curl_close($ch);
-
-      $pfpro = $this->get_curl_result($result); //result arrray
-    
-      if (isset($pfpro['RESULT']) && $pfpro['RESULT'] == 0) {
-        return $pfpro;
-      } else {
-        $this->set_errors($pfpro['RESPMSG'] . ' ['. $pfpro['RESULT'] . ']');
-        return false;     
-      }
-    }
+    function sale_transaction($ccts) {
+		$this->errors = array();
+		$body = $this->_request_body('S',$ccts);
+		$result = $this->_curl_request($body);	
+		return $this->_response2arr($result);
+	}
 
     // Authorization
-    function authorization($card_number, $card_expire, $amount, $card_holder_name, $currency = 'USD') {
-
-      if ($this->validate_card_number($card_number) == false) {
-        $this->set_errors('Card Number not valid');
-        return;     
-      }
-      if ($this->validate_card_expire($card_expire) == false) {
-        $this->set_errors('Card Expiration Date not valid');
-        return;     
-      }     
-      if (!is_numeric($amount) || $amount <= 0) {
-        $this->set_errors('Amount is not valid');
-        return;           
-      }
-      if (!in_array($currency, $this->currencies_allowed)) {
-        $this->set_errors('Currency not allowed');
-        return;                   
-      } 
-     
-      // build hash
-      $tempstr = $card_number . $amount . date('YmdGis') . "1";
-      $request_id = md5($tempstr);
-      
-      // body of the POST
-      $plist = 'USER=' . $this->user . '&';
-      $plist .= 'VENDOR=' . $this->vendor . '&';
-      $plist .= 'PARTNER=' . $this->partner . '&';
-      $plist .= 'PWD=' . $this->password . '&';           
-      $plist .= 'TENDER=' . 'C' . '&'; // C = credit card, P = PayPal
-      $plist .= 'TRXTYPE=' . 'A' . '&'; //  S = Sale transaction, A = Authorisation, C = Credit, D = Delayed Capture, V = Void                        
-      $plist .= 'ACCT=' . $card_number . '&';
-      $plist .= 'EXPDATE=' . $card_expire . '&'; 
-      $plist .= 'NAME=' . $card_holder_name . '&';
-      $plist .= 'AMT=' . $amount . '&';  // amount
-      $plist .= 'CURRENCY=' . $currency . '&';
-      $plist .= 'VERBOSITY=MEDIUM';
-    
-      $headers = $this->get_curl_headers();
-      $headers[] = "X-VPS-Request-ID: " . $request_id;
-
-      $user_agent = "Mozilla/4.0 (compatible; MSIE 5.01; Windows NT 5.0)"; // play as Mozilla
-      $ch = curl_init(); 
-      curl_setopt($ch, CURLOPT_URL, $this->submiturl);
-      curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-      curl_setopt($ch, CURLOPT_USERAGENT, $user_agent);
-      curl_setopt($ch, CURLOPT_HEADER, 1); // tells curl to include headers in response
-      curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1); // return into a variable
-      curl_setopt($ch, CURLOPT_TIMEOUT, 45); // times out after 45 secs
-      curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 0);
-      curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0); // this line makes it work under https
-      curl_setopt($ch, CURLOPT_POSTFIELDS, $plist); //adding POST data
-      curl_setopt($ch, CURLOPT_SSL_VERIFYHOST,  2); //verifies ssl certificate
-      curl_setopt($ch, CURLOPT_FORBID_REUSE, TRUE); //forces closure of connection when done 
-      curl_setopt($ch, CURLOPT_POST, 1); //data sent as POST 
-    
-      // $rawHeader = curl_exec($ch); // run the whole process
-      // $info = curl_getinfo($ch); //grabbing details of curl connection
-      $result = curl_exec($ch);
-      $headers = curl_getinfo($ch);
-      curl_close($ch);
-
-      $pfpro = $this->get_curl_result($result); //result arrray
-    
-      if (isset($pfpro['RESULT']) && $pfpro['RESULT'] == 0) {
-        return $pfpro;
-      } else {
-        $this->set_errors($pfpro['RESPMSG'] . ' ['. $pfpro['RESULT'] . ']');
-        return false;     
-      }
+    function authorization($ccts) {
+		$this->errors = array();
+		$body = $this->_request_body('A',$ccts);
+		$result = $this->_curl_request($body);	
+		return $this->_response2arr($result);
     }
 
     // Delayed Capture
-    function delayed_capture($origid, $card_number = '', $card_expire = '', $amount = '') {
-      
-      if (strlen($origid) < 3) {
-        $this->set_errors('OrigID not valid');
-        return; 
-      }
+    function delayed_capture($origid, $ccts) {
+		$this->errors = array();
+		if(!$ccts instanceof CCTransSlip) 
+			throw new Exception("bad Credit Card Transaction argument");
 
-      // build hash
-      $tempstr = $card_number . $amount . date('YmdGis') . "2";
-      $request_id = md5($tempstr);
+		if (strlen($origid) < 3) {
+			$this->error('OrigID not valid');
+			return; 
+		}
 
-      // body
-      $plist = 'USER=' . $this->user . '&';
-      $plist .= 'VENDOR=' . $this->vendor . '&';
-      $plist .= 'PARTNER=' . $this->partner . '&';
-      $plist .= 'PWD=' . $this->password . '&';           
-      $plist .= 'TENDER=' . 'C' . '&'; // C = credit card, P = PayPal
-      $plist .= 'TRXTYPE=' . 'D' . '&'; //  S = Sale transaction, A = Authorisation, C = Credit, D = Delayed Capture, V = Void                        
-      $plist .= "ORIGID=" . $origid . "&"; // ORIGID to the PNREF value returned from the original transaction
-      $plist .= 'VERBOSITY=MEDIUM';
-
-      $headers = $this->get_curl_headers();
-      $headers[] = "X-VPS-Request-ID: " . $request_id;
-  
-      $user_agent = "Mozilla/4.0 (compatible; MSIE 5.01; Windows NT 5.0)";
-      $ch = curl_init(); 
-      curl_setopt($ch, CURLOPT_URL, $this->submiturl);
-      curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-      curl_setopt($ch, CURLOPT_USERAGENT, $user_agent);
-      curl_setopt($ch, CURLOPT_HEADER, 1); // tells curl to include headers in response
-      curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1); // return into a variable
-      curl_setopt($ch, CURLOPT_TIMEOUT, 45); // times out after 45 secs
-      curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 0);
-      curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0); // this line makes it work under https
-      curl_setopt($ch, CURLOPT_POSTFIELDS, $plist); //adding POST data
-      curl_setopt($ch, CURLOPT_SSL_VERIFYHOST,  2); //verifies ssl certificate
-      curl_setopt($ch, CURLOPT_FORBID_REUSE, TRUE); //forces closure of connection when done 
-      curl_setopt($ch, CURLOPT_POST, 1); //data sent as POST 
-      
-      $result = curl_exec($ch);
-      $headers = curl_getinfo($ch);
-      curl_close($ch);
-            
-      $pfpro = $this->get_curl_result($result); //result arrray
-      
-      if (isset($pfpro['RESULT']) && $pfpro['RESULT'] == 0) {
-        return $pfpro;
-      } else {
-        $this->set_errors($pfpro['RESPMSG'] . ' ['. $pfpro['RESULT'] . ']');
-        return false;     
-      }     
-    }
-
-    // Authorization followed by Delayed Capture
-    function authorization_delayed_capture($card_number, $card_expire, $amount, $card_holder_name, $currency = 'USD') {
-       // 1. authorization
-      $result = $this->authorization($card_number, $card_expire, $amount, $card_holder_name, $currency = 'USD');
-      if (!$this->get_errors() && isset($result['PNREF'])) {
-        // 2. delayed
-        $result_capture = $this->delayed_capture($result['PNREF']);
-        if (!$this->get_errors()) {
-          return $result_capture;
-        }       
-      }
-      return false;
+		$body = $this->_request_body('D',$ccts);
+		$result = $this->_curl_request($body);	
+	
+		return $this->_response2arr($result);
     }
 
     // Credit Transaction
     function credit_transaction($origid) {
+      	if (strlen($origid) < 3) {
+			$this->error('OrigID not valid');
+			return; 
+		}
 
-      if (strlen($origid) < 3) {
-        $this->set_errors('OrigID not valid');
-        return; 
-      }
-
-      // build hash
-      $tempstr = $card_number . $amount . date('YmdGis') . "2";
-      $request_id = md5($tempstr);
-
-      // body
-      $plist = 'USER=' . $this->user . '&';
-      $plist .= 'VENDOR=' . $this->vendor . '&';
-      $plist .= 'PARTNER=' . $this->partner . '&';
-      $plist .= 'PWD=' . $this->password . '&';           
       $plist .= 'TENDER=' . 'C' . '&'; // C = credit card, P = PayPal
       $plist .= 'TRXTYPE=' . 'C' . '&'; //  S = Sale transaction, A = Authorisation, C = Credit, D = Delayed Capture, V = Void
       $plist .= "ORIGID=" . $origid . "&"; // ORIGID to the PNREF value returned from the original transaction
-      $plist .= 'VERBOSITY=MEDIUM';
-
-      $headers = $this->get_curl_headers();
-      $headers[] = "X-VPS-Request-ID: " . $request_id;
-  
-      $user_agent = "Mozilla/4.0 (compatible; MSIE 5.01; Windows NT 5.0)";
-      $ch = curl_init(); 
-      curl_setopt($ch, CURLOPT_URL, $this->submiturl);
-      curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-      curl_setopt($ch, CURLOPT_USERAGENT, $user_agent);
-      curl_setopt($ch, CURLOPT_HEADER, 1); // tells curl to include headers in response
-      curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1); // return into a variable
-      curl_setopt($ch, CURLOPT_TIMEOUT, 45); // times out after 45 secs
-      curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 0);
-      curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0); // this line makes it work under https
-      curl_setopt($ch, CURLOPT_POSTFIELDS, $plist); //adding POST data
-      curl_setopt($ch, CURLOPT_SSL_VERIFYHOST,  2); //verifies ssl certificate
-      curl_setopt($ch, CURLOPT_FORBID_REUSE, TRUE); //forces closure of connection when done 
-      curl_setopt($ch, CURLOPT_POST, 1); //data sent as POST 
-      
-      $result = curl_exec($ch);
-      $headers = curl_getinfo($ch);
-      curl_close($ch);
-            
-      $pfpro = $this->get_curl_result($result); //result arrray
-      
-      if (isset($pfpro['RESULT']) && $pfpro['RESULT'] == 0) {
-        return $pfpro;
-      } else {
-        $this->set_errors($pfpro['RESPMSG'] . ' ['. $pfpro['RESULT'] . ']');
-        return false;     
-      } 
     }
     
     // Void Transaction
     function void_transaction($origid) {
 
-      if (strlen($origid) < 3) {
-        $this->set_errors('OrigID not valid');
-        return; 
-      }
 
-      // build hash
-      $tempstr = $card_number . $amount . date('YmdGis') . "2";
-      $request_id = md5($tempstr);
-
-      // body
-      $plist = 'USER=' . $this->user . '&';
-      $plist .= 'VENDOR=' . $this->vendor . '&';
-      $plist .= 'PARTNER=' . $this->partner . '&';
-      $plist .= 'PWD=' . $this->password . '&';           
       $plist .= 'TENDER=' . 'C' . '&'; // C = credit card, P = PayPal
       $plist .= 'TRXTYPE=' . 'V' . '&'; //  S = Sale transaction, A = Authorisation, C = Credit, D = Delayed Capture, V = Void                        
       $plist .= "ORIGID=" . $origid . "&"; // ORIGID to the PNREF value returned from the original transaction
-      $plist .= 'VERBOSITY=MEDIUM';
-
-      $headers = $this->get_curl_headers();
-      $headers[] = "X-VPS-Request-ID: " . $request_id;
-  
-      $user_agent = "Mozilla/4.0 (compatible; MSIE 5.01; Windows NT 5.0)";
-      $ch = curl_init(); 
-      curl_setopt($ch, CURLOPT_URL, $this->submiturl);
-      curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-      curl_setopt($ch, CURLOPT_USERAGENT, $user_agent);
-      curl_setopt($ch, CURLOPT_HEADER, 1); // tells curl to include headers in response
-      curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1); // return into a variable
-      curl_setopt($ch, CURLOPT_TIMEOUT, 45); // times out after 45 secs
-      curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 0);
-      curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0); // this line makes it work under https
-      curl_setopt($ch, CURLOPT_POSTFIELDS, $plist); //adding POST data
-      curl_setopt($ch, CURLOPT_SSL_VERIFYHOST,  2); //verifies ssl certificate
-      curl_setopt($ch, CURLOPT_FORBID_REUSE, TRUE); //forces closure of connection when done 
-      curl_setopt($ch, CURLOPT_POST, 1); //data sent as POST 
-      
-      $result = curl_exec($ch);
-      $headers = curl_getinfo($ch);
-      curl_close($ch);
-            
-      $pfpro = $this->get_curl_result($result); //result arrray
-      
-      if (isset($pfpro['RESULT']) && $pfpro['RESULT'] == 0) {
-        return $pfpro;
-      } else {
-        $this->set_errors($pfpro['RESPMSG'] . ' ['. $pfpro['RESULT'] . ']');
-        return false;     
-      } 
     }
 
-    // Curl custom headers; adjust appropriately for your setup:
-    function get_curl_headers() {
-      $headers = array();
-      
-      $headers[] = "Content-Type: text/namevalue"; //or maybe text/xml
-      $headers[] = "X-VPS-Timeout: 30";
-      $headers[] = "X-VPS-VIT-OS-Name: Linux";  // Name of your OS
-      $headers[] = "X-VPS-VIT-OS-Version: RHEL 4";  // OS Version
-      $headers[] = "X-VPS-VIT-Client-Type: PHP/cURL";  // What you are using
-      $headers[] = "X-VPS-VIT-Client-Version: 0.01";  // For your info
-      $headers[] = "X-VPS-VIT-Client-Architecture: x86";  // For your info
-      $headers[] = "X-VPS-VIT-Client-Certification-Id: " . $this->ClientCertificationId . ""; // get this from payflowintegrator@paypal.com
-      $headers[] = "X-VPS-VIT-Integration-Product: MyApplication";  // For your info, would populate with application name
-      $headers[] = "X-VPS-VIT-Integration-Version: 0.01"; // Application version    
-      
-      return $headers;  
+	function get_errors() {
+		return $this->errors;
+    }
+ 
+	function clear_errors() {
+		$this->errors = array();
+	} 
+
+    function error($string) {
+		$this->errors[] = $string;
     }
 
-    // parse result and return an array
-    function get_curl_result($result) {
-      if (empty($result)) return;
+	function get_version() {
+		return PFP_V;
+	}    
 
-      $pfpro = array();
-      $result = strstr($result, 'RESULT');    
-      $valArray = explode('&', $result);
-      foreach($valArray as $val) {
-        $valArray2 = explode('=', $val);
-        $pfpro[$valArray2[0]] = $valArray2[1];
-      }
-      return $pfpro;    
-    }
+	function _request_body($txnType,$tokenOrCCTransSlip) {
+		if(!in_array($txnType,array('S','A','C','D','V')))
+			throw new Exception("transaction type must be S,A,C,D, or V");
+		// that is, (S)ale, (A)uthorisation, (C)redit, (D)elayed Capture, (V)oid 
 
-    function validate_card_expire($mmyy) {
-      if (!is_numeric($mmyy) || strlen($mmyy) != 4) {
-        return false;
-      }      
-      $mm = substr($mmyy, 0, 2);
-      $yy = substr($mmyy, 2, 2);        
-      if ($mm < 1 || $mm > 12) {
-        return false;
-      }
-      $year = date('Y');
-      $yy = substr($year, 0, 2) . $yy; // eg 2007
-      if (is_numeric($yy) && $yy >= $year && $yy <= ($year + 10)) {
-      } else {
-        return false;
-      }
-      if ($yy == $year && $mm < date('n')) {
-        return false;
-      }      
-      return true;
-    }
+		$rv = array(   
+      		"USER={$this->user}",
+			"VENDOR={$this->vendor}",
+      		"PARTNER={$this->partner}",
+			"PWD={$this->password}",
 
-    // luhn algorithm
-    function validate_card_number($card_number) {
-      $card_number = ereg_replace('[^0-9]', '', $card_number);      
-      if ($card_number < 9) return false;
-      $card_number = strrev($card_number);
-      $total = 0;
-      for ($i = 0; $i < strlen($card_number); $i++) {
-        $current_number = substr($card_number, $i, 1);
-        if ($i % 2 == 1) {
-          $current_number *= 2;
-        }
-        if ($current_number > 9) {
-          $first_number = $current_number % 10;
-          $second_number = ($current_number - $first_number) / 10;
-          $current_number = $first_number + $second_number;
-        }
-        $total += $current_number;
-      }
-      return ($total % 10 == 0);
-    }
+			"VERBOSITY=MEDIUM",
 
-    function get_errors() {
-      if ($this->errors != '') {
-        return $this->errors;
-      }
-      return false;
-    }
-  
-    function set_errors($string) {
-      $this->errors = $string;
-    }
+			"TENDER=C",					// (C)redit card, (P)ayPal
+			"TRXTYPE=$txnType", 
+		);
 
-    function get_version() {
-      return '4.03';
-    }    
-  } 
-?>
+		if(is_string($tokenOrCCTransSlip)) { //WTC - single point origid vdation?
+			$token = $tokenOrCCTransSlip;
+			if(strlen($token) < 3) {
+				$this->error('OrigID not valid');
+				return false; 
+      		} 
+			$rv[] = "ORIGID=$token"; 
+
+			return implode('&',$rv);
+
+		} else if(!($tokenOrCCTransSlip instanceof CCTransSlip)) {
+			$this->error('2nd argument to _request_body neither original transaction id token nor CCTransSlip');
+			return false;
+		} 
+
+		$ccts = $tokenOrCCTransSlip;
+		$rv[] = "AMT={$ccts->amount}";
+      	$rv[] = "CLIENTIP={$_SERVER['REMOTE_ADDR']}";
+		$rv[] = "ACCT={$ccts->ccnum}";
+		$rv[] = "EXPDATE={$ccts->ccexp}";
+
+		if($ccts->cvv)
+			$rv[] = "CVV2={$ccts->cvv}";
+
+		if($ccts->lastname)
+			$rv[] = "LASTNAME={$ccts->lastname}";
+		if($ccts->firstname)
+			$rv[] = "FIRSTNAME={$ccts->firstname}";
+		if($ccts->middlename)
+			$rv[] = "MIDDLENAME={$ccts->middlename}";
+		
+		if($ccts->street)
+			$rv[] = "STREET={$ccts->street}";
+		if($ccts->city)
+			$rv[] = "CITY={$ccts->city}";
+		if($ccts->zip)
+			$rv[] = "ZIP={$ccts->zip}";
+		if($ccts->country)
+			$rv[] = "COUNTRY={$ccts->country}";
+
+		if($ccts->description)
+			$rv[] = "COMMENT1={$ccts->description}";
+
+		return implode('&',$rv);
+	}
+
+	function _curl_request($body,$seq=1) {
+		$sheaders = array();
+		$sheaders[] = "Content-Type: text/namevalue"; //or maybe text/xml
+		$sheaders[] = "X-VPS-Timeout: ".PFP_TIMEOUT;
+		$sheaders[] = "X-VPS-VIT-OS-Name: ".php_uname('s');  // Name of your OS
+		$sheaders[] = "X-VPS-VIT-OS-Version: ".php_uname('r');  // OS Version
+		$sheaders[] = "X-VPS-VIT-Client-Type: PHP/cURL";  // What you are using
+		$sheaders[] = "X-VPS-VIT-Client-Version: ".PFP_V;  // For your info
+
+		$request_id = md5(implode(null,array($card_number,$amount,date('YmdGis'),$seq))); //WTD  ... trailing 2 on secondaries? need ccts?
+		$sheaders[] = "X-VPS-Request-ID: $request_id";
+
+		$ch = curl_init(); 
+		curl_setopt($ch, CURLOPT_URL, $this->test_mode ? PFP_TEST_URL : PFP_LIVE_URL);
+		curl_setopt($ch, CURLOPT_HTTPHEADER, $sheaders);
+		curl_setopt($ch, CURLOPT_USERAGENT, PFP_USER_AGENT);
+		curl_setopt($ch, CURLOPT_HEADER, 1); // tells curl to include headers in response
+		curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1); // return into a variable
+		curl_setopt($ch, CURLOPT_TIMEOUT, PFP_TIMEOUT); // times out after 45 secs
+		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 0);
+		curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0); // this line makes it work under https
+		curl_setopt($ch, CURLOPT_SSL_VERIFYHOST,  2); //verifies ssl certificate
+		curl_setopt($ch, CURLOPT_FORBID_REUSE, TRUE); //forces closure of connection when done 
+		curl_setopt($ch, CURLOPT_POST, 1); //data sent as POST 
+		curl_setopt($ch, CURLOPT_POSTFIELDS, $body); //adding POST data
+
+		$result = curl_exec($ch);
+		$rheaders = curl_getinfo($ch);
+		curl_close($ch);
+
+		return $result;
+	}
+
+	function _response2arr($response) {
+		$body = strstr($response, 'RESULT');    
+		$rv = array();
+		$kvps = explode('&',$body);
+		foreach($kvps as $kvp) {
+			list($k,$v) = explode('=',$kvp);
+			$rv[$k] = $v;	
+		}
+		return $rv;	
+	}
+} 
+
+

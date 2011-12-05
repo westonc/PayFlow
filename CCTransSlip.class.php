@@ -36,7 +36,8 @@ class CCTransSlip {
 	}
 
 	function _extant($k) {
-		$this->in[$k] = trim($this->in[$k]);
+		//echo "\nextant $k";
+		$this->in[$k] = isset($this->in[$k]) ? trim($this->in[$k]) : null;
 		if($this->in[$k])
 			return true;
 		$this->_vf($k,"$k is missing");
@@ -81,24 +82,32 @@ class CCTransSlip {
 	}
 
 	function _validate_ccexp() {
+		$k = 'ccexpyear';
+		if(!$this->_extant($k))
+			$rv = false;
+		else if(!preg_match('/^\d{2}$/',$this->in[$k])) {
+			$this->_vf($k,"The expiration year is not a two-digit year");
+			$rv = false;
+ 		} else if($this->in[$k] < date('y')) {
+			$this->_vf($k,"The expiration year is in the past");
+			$rv = false;
+		} else
+			$rv = $this->in[$k];
+		$yearIsCurrent = ($this->in[$k] == date('y'));
+
 		$k = 'ccexpmonth';
-		$rv = $this->in[$k];
 		if(!$this->_extant($k))
 			$rv = false;
 		else if(! preg_match('/^\d{2}$/',$this->in[$k] ) 
 			|| ($this->in[$k] < 1) || ($this->in[$k] > 12) ) {
-			$this->_vf($k,"The expiration month is not a two-digit month number");
+			$this->_vf($k,"The expiration month is not a two-digit month");
 			$rv = false;
-		} 
+		} else if($yearIsCurrent && $this->in[$k] < date('m')) {
+			$this->_vf($k,"The expiration month is in the past");
+			$rv = false;
+		} else if($rv)
+			$rv = "{$this->in[$k]}$rv";
 
-		$k = 'ccexpyear';
-		if(!$this->_extant($k))
-			$rv = false;
-		else if(! preg_match('/^\d{2}$/',$this->in[$k]) || ($this->in[$k] < date('y')) ) {
-			$this->_vf($k,"The expiration year is not a current/future two-digit year");
-			$rv = false;
-		} else
-			$rv = "$rv{$this->in[$k]}";
 		return $rv;
 	}
 
@@ -147,7 +156,7 @@ class CCTransSlip {
 
 	function _validate_country() {
 		$k = 'country';
-		if(!$this->in[$k])
+		if(!isset($this->in[$k]) || !$this->in[$k])
 			return 'USA';
 	}
 
@@ -155,7 +164,7 @@ class CCTransSlip {
 		$k = 'zip';
 		if(!$this->_extant($k))
 			return false;
-		if(!preg_match('/^\d{5}(-\d{4})$/',$this->in[$k])) {
+		if(!preg_match('/^\d{5}(-\d{4})?$/',$this->in[$k])) {
 			$this->_vf($k,"The billing zip doesn't seem to be a valid US zip code");
 			return false;
 		}
@@ -163,7 +172,9 @@ class CCTransSlip {
 	}
 
 	function _validate_description() {
-		return $this->in['description'];
+		return isset($this->in['description']) ? 
+			$this->in['description'] : 
+			'';
 	} 
 
 	function _validate_currency() {
@@ -188,18 +199,25 @@ class CCTransSlip {
 			$validate[] = 'cvv';
 		}
 		if($what & self::VALIDATE_ADDRESS) {
-			array_merge($validate,array('street','city','state','zip','country'));
+			$validate = array_merge($validate,array('street','city','state','zip','country'));
+			//echo "\n\nvalidating address including fields:";
+			//var_export($validate);
+			//echo "\n";
 		}
 
 		$this->vfs = array(); 
 		$rv = true;
 
 		foreach($validate as $v) {
+			//echo "\nvalidating $v";
 			$tmp = call_user_func( array(&$this,"_validate_$v") );
-			if( !($tmp === false) ) 
+			if( !($tmp === false) ) {
+				//echo "\n$v: $tmp passes";
 				$this->$v = $tmp;
-			else
+			} else {
+				//echo "\n$v: fails";
 				$rv = false;
+			}
 		}
 		return $rv;
 	}

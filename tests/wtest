@@ -1,0 +1,59 @@
+#!/usr/bin/php
+<?php
+
+require_once('WTestSet.class.php');
+
+wtest(); function wtest() {
+	global $_t;
+	$files = glob('*.test.php');
+	echo "LOADING ",($n = count($files))," test files\n";
+	$i = 0;
+	foreach($files as $file) {
+		$i++;
+		echo "$_t$file $i/$n\n";
+		require_once($file);
+	}
+
+	echo 'CHECKING for WTest subclasses... ';
+	$declaredClasses = get_declared_classes();
+	$wtestSubclasses = array(); 
+    foreach($declaredClasses as $c) {
+        if(is_subclass_of($c,'WTestSet')) {
+			$wtestSubclasses[] = $c;
+		}
+    }
+	if(($wc = count($wtestSubclasses)) != $i) 
+		echo '*WARNING*: ';
+	echo "$wc classes for $i files\n";
+
+	echo "\nRUNNING test sets:\n";
+	set_error_handler('wtest_throw_error_exception',E_ALL);	
+	$complete = 0; $incomplete = 0; $i=0;
+	foreach($wtestSubclasses as $wtc) {
+		$i++;
+		echo "* set $wtc [#$i of $wc]: ";
+		try {
+			$wto = new $wtc;
+			$score = $wto->run();
+			if($score == 1) {
+				$complete++;
+				echo "passes completely\n";
+			} else {
+				$incomplete++;
+				echo "incomplete (score: $score)";
+			}
+		} catch(Exception $e) {
+			$incomplete++;
+			echo "failed while incomplete (",$e->getMessage(),")\n";
+		}
+	}
+	echo "\nSUMMARY";
+	echo "\n{$_t}complete: $complete incomplete: $incomplete total: $wc\n";
+}
+
+function wtest_throw_error_exception($number = 0, $str = '',$file = null,$line = null) {
+    throw new ErrorException($str, 0, $number, $file, $line);
+    die("WTF? Control flow shouldn't *ever* reach here");
+}
+
+?>
