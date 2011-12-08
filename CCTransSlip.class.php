@@ -2,10 +2,8 @@
 
 class CCTransSlip {
 
-    const VALIDATE_BASIC	= 0;
-    const VALIDATE_CVV		= 1;
-	const VALIDATE_ADDRESS	= 2;
-	const VALIDATE_ALL		= 3;
+	static $validations = array('BASIC','CVV','ADDRESS','NAME');
+	private $validationScheme; 
 
 	private $in;
 	private $vfs; //validation failures
@@ -13,7 +11,10 @@ class CCTransSlip {
 
 	var $ccnum;
 	var $ccexp;
-	var $ccname;
+
+	var $ccfname;
+	var $ccmi;
+	var $ccsurname;
 
 	var $cvv;
 
@@ -111,11 +112,26 @@ class CCTransSlip {
 		return $rv;
 	}
 
-	function _validate_ccname() {
-		return true;
+	function _validate_ccfname() {
+		$k = 'ccfname';
+		return isset($this->in[$k]) ? 
+			$this->in[$k] :
+			'';
 	}
 
-	function _name_guess_split($n) {
+	function _validate_ccmi() {
+		$k = 'ccmi';
+		return isset($this->in[$k]) ? 
+			$this->in[$k] :
+			'';
+	}
+
+	function _validate_ccsurname() {
+		$k = 'ccsurname';
+		if(!$this->_extant($k))
+			return false;
+		else
+			return $this->in[$k];
 	}
 
 	function _validate_cvv() {
@@ -192,41 +208,66 @@ class CCTransSlip {
 		return $this->in[$k];
 	}
 
-	function validate($what=0) {
-		$this->validation = $what;
-		$validate = array('ccnum','ccexp','description','currency','amount'); // add later: ccname
-		if($what & self::VALIDATE_CVV) {
+	function _fields_to_validate() {
+		$vscheme = $this->validationScheme();
+
+		//$vscheme['BASIC']
+		$validate = array('ccnum','ccexp','description','currency','amount'); 
+
+		if($vscheme['CVV']) {
 			$validate[] = 'cvv';
 		}
-		if($what & self::VALIDATE_ADDRESS) {
+
+		if($vscheme['ADDRESS']) {
 			$validate = array_merge($validate,array('street','city','state','zip','country'));
-			//echo "\n\nvalidating address including fields:";
-			//var_export($validate);
-			//echo "\n";
 		}
+
+		if($vscheme['NAME']) {
+			$validate = array_merge($validate,array('ccfname','ccmi','ccsurname'));
+		}
+
+		return $validate;
+	}
+
+	function validate() {
+		$args = func_get_args();
+		$this->validationScheme($args);
+		$validate = $this->_fields_to_validate();
 
 		$this->vfs = array(); 
 		$rv = true;
 
 		foreach($validate as $v) {
-			//echo "\nvalidating $v";
 			$tmp = call_user_func( array(&$this,"_validate_$v") );
 			if( !($tmp === false) ) {
-				//echo "\n$v: $tmp passes";
 				$this->$v = $tmp;
 			} else {
-				//echo "\n$v: fails";
 				$rv = false;
 			}
 		}
 		return $rv;
 	}
 
-	function validationScheme() {
-	    static $a = array('VALIDATE_BASIC','VALIDATE_CVV','VALIDATE_ADDRESS','VALIDATE_ALL');
-		return $a[$this->validation];	
+	function validationScheme($schemes = null) {
+		if(is_array($schemes)) {
+			$this->validationSchemes = array();
+
+			if(isset($schemes[0]) && ($schemes[0] == 'ALL')) {
+				foreach(self::$validations as $validation)
+					$this->validationSchemes[$validation] = true;
+			} else {
+				foreach(self::$validations as $validation)
+					$this->validationSchemes[$validation] = false;
+
+				foreach($schemes as $scheme) 
+					$this->validationSchemes[$scheme] = true;
+
+				$this->validationSchemes['BASIC'] = true;
+			}
+		}
+		return $this->validationSchemes;
 	}
-	
+
 	function validationFailureMsgs($as=null) {
 		if($as=='json') 
 			return json_encode($this->vfs);

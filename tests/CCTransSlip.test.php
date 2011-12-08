@@ -170,19 +170,34 @@ class Test_CCTransSlip extends WTestSet {
 		return $this->assert($result == true, "failed to clear good card");
 	}
 
+	function test_card_plus_name_fails() {
+		$data = array(
+			'ccnum'			=> '5555555555554444',
+			'ccexpmonth'	=> '06',
+			'ccexpyear'		=> date('y',strtotime('next year')),
+			'amount'		=> '1.00'
+		);
+		$emsg = array( 'ccsurname' => 'ccsurname is missing' );
 
+		$ccts = new CCTransSlip($data);
+		$result = $ccts->validate('NAME');
+
+		return $this->assert($result == false, "failed to catch bad card name");
+	}
 
 	function test_card_plus_name_good() {
 		$data = array(
 			'ccnum'			=> '5555555555554444',
 			'ccexpmonth'	=> '06',
 			'ccexpyear'		=> date('y',strtotime('next year')),
-			'ccname'		=> 'Testing R. Cannon',
+			'ccname'		=> 'Testing',
+			'ccmi'			=> 'R',
+			'ccsurname'		=> 'Cannon',
 			'amount'		=> '1.00'
 		);
 
 		$ccts = new CCTransSlip($data);
-		$result = $ccts->validate();
+		$result = $ccts->validate('NAME');
 
 		return $this->assert($result == true, "failed to clear good card");
 	}
@@ -198,7 +213,7 @@ class Test_CCTransSlip extends WTestSet {
 		$emsg = array('cvv' => "The CVV/Security Code is not a 3-4 digit number");
 
 		$ccts = new CCTransSlip($data);
-		$result = $ccts->validate(CCTransSlip::VALIDATE_CVV);
+		$result = $ccts->validate('CVV');
 
 		return $this->assert($result == false, "failed to catch bad cvv")
 			&& $this->assertSame('failure msgset',$ccts->validationFailureMsgs(),'baseline msgset',$emsg);
@@ -214,7 +229,7 @@ class Test_CCTransSlip extends WTestSet {
 		);
 
 		$ccts = new CCTransSlip($data);
-		$result = $ccts->validate(CCTransSlip::VALIDATE_CVV);
+		$result = $ccts->validate('CVV');
 
 		return $this->assert($result == true, "failed to clear good cvv");
 	}
@@ -224,7 +239,9 @@ class Test_CCTransSlip extends WTestSet {
 			'ccnum'			=> '5555555555554444',
 			'ccexpmonth'	=> '06',
 			'ccexpyear'		=> date('y',strtotime('next year')),
-			'ccname'		=> 'Testing R. Cannon',
+			'ccfname'		=> 'Testing',
+			'ccmi'			=> 'R',
+			'ccsurname'		=> 'Cannon',
 			'cvv'			=> '456',
 			'amount'		=> '1.00'
 		);
@@ -236,18 +253,20 @@ class Test_CCTransSlip extends WTestSet {
 		);
 
 		$ccts = new CCTransSlip($data);
-		$result = $ccts->validate(CCTransSlip::VALIDATE_ADDRESS);
+		$result = $ccts->validate('ADDRESS');
 
 		return $this->assert($result == false, "failed to catch missing address")
 			&& $this->assertSame('failure msgset',$ccts->validationFailureMsgs(),'baseline msgset',$emsg);
 	}
 
-	function test_validate_address_passes() {
+	function test_validate_all_passes() {
 		$data = array(
 			'ccnum'			=> '5555555555554444',
 			'ccexpmonth'	=> '06',
 			'ccexpyear'		=> date('y',strtotime('next year')),
-			'ccname'		=> 'Testing R. Cannon',
+			'ccname'		=> 'Testing',
+			'ccmi'			=> 'R',
+			'ccsurname'		=> 'Cannon',
 			'cvv'			=> '456',
 			'street'		=> '123 Test',
 			'city'			=> 'Test',
@@ -258,7 +277,7 @@ class Test_CCTransSlip extends WTestSet {
 		);
 
 		$ccts = new CCTransSlip($data);
-		$result = $ccts->validate(CCTransSlip::VALIDATE_ADDRESS);
+		$result = $ccts->validate('ALL');
 
 		return $this->assert($result == true, "failed to pass validated address");
 	}

@@ -22,7 +22,7 @@ define('PFP_USER_AGENT',"Mozilla/4.0 (compatible; PHP CURL PayFlow SDK)");
 define('PFP_TIMEOUT',45);
 define('PFP_V','0.2');
 define('PFP_MODE_TEST',1);
-define('PFP_MODE_LIVE',0)
+define('PFP_MODE_LIVE',0);
 
 define('PFP_STATUS_OK', 1);
 define('PFP_USER_ERR', 0);
@@ -40,6 +40,8 @@ class PayFlow {
 	var $currencies_allowed = array('USD', 'EUR', 'GBP', 'CAD', 'JPY', 'AUD');
 
 	var $test_mode = 1; // 1 = true, 0 = production
+
+	var $request_id;
     
     function __construct($args) {
 		$requireds = array('vendor','user','partner','password');
@@ -60,18 +62,32 @@ class PayFlow {
     // sale
     function sale_transaction($ccts) {
 		$this->errors = array();
+		$this->_make_request_id($ccts);
 		$body = $this->_request_body('S',$ccts);
-		$result = $this->_curl_request($body);	
+		$result = $this->_curl_request($body);
 		return $this->_response2arr($result);
 	}
 
     // Authorization
     function authorization($ccts) {
+		$this->authorize($ccts);
+	}
+
+    function authorize($ccts) {
 		$this->errors = array();
+		$this->_make_request_id($ccts);
 		$body = $this->_request_body('A',$ccts);
-		$result = $this->_curl_request($body);	
+		$result = $this->_curl_request($body);
 		return $this->_response2arr($result);
     }
+
+	function void($pnref) {
+		$this->errors = array();
+		//$this->_make_request_id($pnref);
+		$body = $this->_void_request_body($pnref);
+		$result = $this->_curl_request($body);
+		return $this->_response2arr($result);
+	}
 
     // Delayed Capture
     function delayed_capture($origid, $ccts) {
@@ -85,30 +101,28 @@ class PayFlow {
 		}
 
 		$body = $this->_request_body('D',$ccts);
-		$result = $this->_curl_request($body);	
+		$result = $this->_curl_request($body);
 	
 		return $this->_response2arr($result);
     }
 
     // Credit Transaction
-    function credit_transaction($origid) {
-      	if (strlen($origid) < 3) {
+    function credit($origid) {
+		if (strlen($origid) < 3) {
 			$this->error('OrigID not valid');
 			return; 
 		}
 
-      $plist .= 'TENDER=' . 'C' . '&'; // C = credit card, P = PayPal
-      $plist .= 'TRXTYPE=' . 'C' . '&'; //  S = Sale transaction, A = Authorisation, C = Credit, D = Delayed Capture, V = Void
-      $plist .= "ORIGID=" . $origid . "&"; // ORIGID to the PNREF value returned from the original transaction
-    }
+		$plist .= 'TENDER=' . 'C' . '&'; // C = credit card, P = PayPal
+		$plist .= 'TRXTYPE=' . 'C' . '&'; //  S = Sale transaction, A = Authorisation, C = Credit, D = Delayed Capture, V = Void
+		$plist .= "ORIGID=" . $origid . "&"; // ORIGID to the PNREF value returned from the original transaction
+	}
     
     // Void Transaction
     function void_transaction($origid) {
-
-
-      $plist .= 'TENDER=' . 'C' . '&'; // C = credit card, P = PayPal
-      $plist .= 'TRXTYPE=' . 'V' . '&'; //  S = Sale transaction, A = Authorisation, C = Credit, D = Delayed Capture, V = Void                        
-      $plist .= "ORIGID=" . $origid . "&"; // ORIGID to the PNREF value returned from the original transaction
+		$plist .= 'TENDER=' . 'C' . '&'; // C = credit card, P = PayPal
+		$plist .= 'TRXTYPE=' . 'V' . '&'; //  S = Sale transaction, A = Authorisation, C = Credit, D = Delayed Capture, V = Void                        
+		$plist .= "ORIGID=" . $origid . "&"; // ORIGID to the PNREF value returned from the original transaction
     }
 
 	function get_errors() {
@@ -144,7 +158,7 @@ class PayFlow {
 			"TRXTYPE=$txnType", 
 		);
 
-		if(is_string($tokenOrCCTransSlip)) { //WTC - single point origid vdation?
+		if(is_string($tokenOrCCTransSlip)) { 
 			$token = $tokenOrCCTransSlip;
 			if(strlen($token) < 3) {
 				$this->error('OrigID not valid');
@@ -160,20 +174,22 @@ class PayFlow {
 		} 
 
 		$ccts = $tokenOrCCTransSlip;
+
 		$rv[] = "AMT={$ccts->amount}";
-      	$rv[] = "CLIENTIP={$_SERVER['REMOTE_ADDR']}";
+		if(isset($_SERVER['REMOTE_ADDR']))
+      		$rv[] = "CLIENTIP={$_SERVER['REMOTE_ADDR']}";
 		$rv[] = "ACCT={$ccts->ccnum}";
 		$rv[] = "EXPDATE={$ccts->ccexp}";
 
 		if($ccts->cvv)
 			$rv[] = "CVV2={$ccts->cvv}";
 
-		if($ccts->lastname)
-			$rv[] = "LASTNAME={$ccts->lastname}";
-		if($ccts->firstname)
-			$rv[] = "FIRSTNAME={$ccts->firstname}";
-		if($ccts->middlename)
-			$rv[] = "MIDDLENAME={$ccts->middlename}";
+		if($ccts->ccsurname)
+			$rv[] = "LASTNAME={$ccts->ccsurname}";
+		if($ccts->ccfname)
+			$rv[] = "FIRSTNAME={$ccts->ccfname}";
+		if($ccts->ccmi)
+			$rv[] = "MIDDLENAME={$ccts->ccmi}";
 		
 		if($ccts->street)
 			$rv[] = "STREET={$ccts->street}";
@@ -190,7 +206,31 @@ class PayFlow {
 		return implode('&',$rv);
 	}
 
-	function _curl_request($body,$seq=1) {
+	function _make_request_id($ccts,$seq=1) {
+		return $this->request_id = md5(
+			implode(null,array(
+				$ccts->ccnum,
+				$ccts->amount,
+				date('YmdGis'),
+				$seq
+			))
+		); 
+	}
+
+	function _void_request_body($orig_id) {
+		return implode('&',array(
+			'TRXTYPE=V',
+			'TENDER=C',
+			"PARTNER={$this->partner}",
+			"VENDOR={$this->vendor}",
+			"USER={$this->user}",
+			"PWD={$this->password}",
+			"ORIGID={$orig_id}",
+			'VERBOSITY=MEDIUM'
+		));
+	}
+
+	function _curl_request($body) {
 		$sheaders = array();
 		$sheaders[] = "Content-Type: text/namevalue"; //or maybe text/xml
 		$sheaders[] = "X-VPS-Timeout: ".PFP_TIMEOUT;
@@ -198,9 +238,7 @@ class PayFlow {
 		$sheaders[] = "X-VPS-VIT-OS-Version: ".php_uname('r');  // OS Version
 		$sheaders[] = "X-VPS-VIT-Client-Type: PHP/cURL";  // What you are using
 		$sheaders[] = "X-VPS-VIT-Client-Version: ".PFP_V;  // For your info
-
-		$request_id = md5(implode(null,array($card_number,$amount,date('YmdGis'),$seq))); //WTD  ... trailing 2 on secondaries? need ccts?
-		$sheaders[] = "X-VPS-Request-ID: $request_id";
+		$sheaders[] = "X-VPS-Request-ID: ".$this->request_id;
 
 		$ch = curl_init(); 
 		curl_setopt($ch, CURLOPT_URL, $this->test_mode ? PFP_TEST_URL : PFP_LIVE_URL);
